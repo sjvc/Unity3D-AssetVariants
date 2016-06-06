@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEditor;
 using UnityEngine.SceneManagement;
 using UnityEditor.SceneManagement;
@@ -235,7 +235,7 @@ public class AssetVariants {
 				spriteReplacedInAnimator = true;
 				
 				// Save variant animation clip
-				AssetDatabase.CreateAsset(clipVariant, GetAssetVariantPath(AssetDatabase.GetAssetPath(clip), variant));
+				clipVariant = CreateOrReplaceAsset<AnimationClip>(clipVariant, GetAssetVariantPath(AssetDatabase.GetAssetPath(clip), variant));
 				
 				// Override clip in variant animation controller
 				animatorControllerVariant[clip.name] = clipVariant;
@@ -244,11 +244,25 @@ public class AssetVariants {
 
 		if (spriteReplacedInAnimator){
 			// Save variant animation (override) controller
-			AssetDatabase.CreateAsset(animatorControllerVariant, GetAssetVariantPath(AssetDatabase.GetAssetPath(animatorController), variant));
+			animatorControllerVariant = CreateOrReplaceAsset<AnimatorOverrideController>(animatorControllerVariant, GetAssetVariantPath(AssetDatabase.GetAssetPath(animatorController), variant));
 			animator.runtimeAnimatorController = animatorControllerVariant;
 			return true;
 		}
 		
 		return false;
+	}
+	
+	private static T CreateOrReplaceAsset<T> (T asset, string path) where T:Object{
+		 T existingAsset = AssetDatabase.LoadAssetAtPath<T>(path);
+		 
+		 if (existingAsset == null){
+			 AssetDatabase.CreateAsset(asset, path);
+			 existingAsset = asset;
+		 }
+		 else{
+			 EditorUtility.CopySerialized(asset, existingAsset);
+		 }
+		 
+		 return existingAsset;
 	}
 }
