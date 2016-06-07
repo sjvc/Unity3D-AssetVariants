@@ -1,7 +1,9 @@
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEngine.SceneManagement;
 using UnityEditor.SceneManagement;
+using UnityEngine.Events;
 
 public class AssetVariants {
 	
@@ -23,9 +25,12 @@ public class AssetVariants {
 		// Open scene
 		Scene sceneVariant = EditorSceneManager.OpenScene(sceneVariantPath, OpenSceneMode.Additive);
 		
-		// Loop through all scene game objects with sprite renderer component
+		// Loop through all scene game objects
 		GameObject[] sceneGameObjects = sceneVariant.GetRootGameObjects();
 		foreach(GameObject sceneGameObject in sceneGameObjects){
+			// Disconnect from prefab (if any)
+			DisconnectPrefabInstances(sceneGameObject);
+			
 			// Replace sprites
 			ReplaceSpritesWithVariants(sceneGameObject, variant);
 			
@@ -51,11 +56,7 @@ public class AssetVariants {
 		// Create prefab variant
 		string prefabPath = AssetDatabase.GetAssetPath(prefab);
 		string prefabVariantPath = GetAssetVariantPath(prefabPath, variant);
-		AssetDatabase.DeleteAsset(prefabVariantPath);
-		AssetDatabase.CopyAsset(prefabPath, prefabVariantPath);
-		AssetDatabase.SaveAssets();
-		AssetDatabase.Refresh();
-		GameObject prefabVariant = AssetDatabase.LoadAssetAtPath<GameObject>(prefabVariantPath);
+		GameObject prefabVariant = CopyAsset<GameObject>(prefabPath, prefabVariantPath);;
 		
 		// Replace sprites
 		ReplaceSpritesWithVariants(prefabVariant, variant);
@@ -159,15 +160,20 @@ public class AssetVariants {
 		return null;
 	}
 	
+	private static void DisconnectPrefabInstances(GameObject gameObject){
+		ExecuteOnGameObjectAndChildren(gameObject, go => {
+			PrefabUtility.DisconnectPrefabInstance(go);
+		});
+	}
+	
 	// Replaces sprites in object (and children)
 	private static void ReplaceSpritesWithVariants(GameObject gameObject, string variant){
-		SpriteRenderer renderer = gameObject.GetComponent<SpriteRenderer>();
-		if (renderer != null){
-			ReplaceSpriteWithVariant(renderer, variant);
-		}
-		for(int i=0; i<gameObject.transform.childCount; i++){
-			ReplaceSpritesWithVariants(gameObject.transform.GetChild(i).gameObject, variant);
-		}
+		ExecuteOnGameObjectAndChildren(gameObject, go => {
+			SpriteRenderer renderer = go.GetComponent<SpriteRenderer>();
+			if (renderer != null){
+				ReplaceSpriteWithVariant(renderer, variant);
+			}
+		});
 	}
 	
 	// Replaces sprites with variants
@@ -183,75 +189,106 @@ public class AssetVariants {
 	
 	// Replaces sprites in object animations (and children)
 	private static void ReplaceAnimatorsWithVariants(GameObject gameObject, string variant){
-		Animator animator = gameObject.GetComponent<Animator>();
-		if (animator != null){
-			ReplaceAnimatorWithVariant(animator, variant);
-		}
-		for(int i=0; i<gameObject.transform.childCount; i++){
-			ReplaceAnimatorsWithVariants(gameObject.transform.GetChild(i).gameObject, variant);
-		}
+		ExecuteOnGameObjectAndChildren(gameObject, go => {
+			Animator animator = go.GetComponent<Animator>();
+			if (animator != null){
+				ReplaceAnimatorWithVariant(animator, variant);
+			}
+		});
 	}
-	
+
 	// Replaces sprites in animations with variants
 	private static bool ReplaceAnimatorWithVariant(Animator animator, string variant){
-		RuntimeAnimatorController animatorController = animator.runtimeAnimatorController;
-		
-		if (animatorController == null){
+		bool clipVariantCreated = false;
+		string animatorControllerPath = AssetDatabase.GetAssetPath(animator.runtimeAnimatorController);
+		string animatorControllerVariantPath = GetAssetVariantPath(animatorControllerPath, variant);
+
+		// If controller variant already exists -> use it (if we overwrite it, references to it will be lost)
+		RuntimeAnimatorController animatorControllerVariant = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(animatorControllerVariantPath);
+		if (animatorControllerVariant != null){
+			animator.runtimeAnimatorController = animatorControllerVariant;
 			return false;
 		}
-		
-		bool spriteReplacedInAnimator = false;
-		
-		// Create override animation controller, and replace clips
-		AnimatorOverrideController animatorControllerVariant = new AnimatorOverrideController();
-		animatorControllerVariant.runtimeAnimatorController = animatorController;
-		foreach(AnimationClipPair clipPair in animatorControllerVariant.clips){
-			bool spriteReplacedInClip = false;
-			
-			AnimationClip clip = clipPair.originalClip;
-			
-			// Create variant animation clip with no curves
-			AnimationClip clipVariant = GameObject.Instantiate(clip);
-			
-			// For each curve...
-			EditorCurveBinding[] clipVariantCurveBindings = AnimationUtility.GetObjectReferenceCurveBindings(clipVariant);
-			foreach(EditorCurveBinding clipVariantCurveBinding in clipVariantCurveBindings){
-				ObjectReferenceKeyframe[] curveVariantKeyFrames = AnimationUtility.GetObjectReferenceCurve(clipVariant, clipVariantCurveBinding);
-				// Replace sprites
-				if (clipVariantCurveBinding.type == typeof(SpriteRenderer)){
-					for(int i=0; i<curveVariantKeyFrames.Length; i++){
-						Sprite sprite = (Sprite)curveVariantKeyFrames[i].value;
-						Sprite spriteVariant = GetSpriteVariant(sprite, variant);
-						if (spriteVariant != null){
-							curveVariantKeyFrames[i].value = spriteVariant;
-							spriteReplacedInClip = true;
+
+		// Duplicate Controller and create new clips
+		animatorControllerVariant = CopyAsset<RuntimeAnimatorController>(animatorControllerPath, animatorControllerVariantPath);
+
+		if (animator.runtimeAnimatorController is AnimatorController){
+			foreach(AnimatorControllerLayer layerVariant in ((AnimatorController)animatorControllerVariant).layers){
+				foreach(ChildAnimatorState stateVariant in layerVariant.stateMachine.states){
+					if (stateVariant.state.motion.GetType() == typeof(AnimationClip)){
+						AnimationClip clip = (AnimationClip)stateVariant.state.motion;
+						AnimationClip clipVariant = CreateAnimationClipVariant(clip, variant);
+
+						if (clipVariant != null){
+							clipVariantCreated = true;
+							stateVariant.state.motion = clipVariant;
 						}
 					}
 				}
-				AnimationUtility.SetObjectReferenceCurve(clipVariant, clipVariantCurveBinding, curveVariantKeyFrames);
 			}
-			
-			if (spriteReplacedInClip){
-				spriteReplacedInAnimator = true;
-				
-				// Save variant animation clip
-				clipVariant = CreateOrReplaceAsset<AnimationClip>(clipVariant, GetAssetVariantPath(AssetDatabase.GetAssetPath(clip), variant));
-				
-				// Override clip in variant animation controller
-				animatorControllerVariant[clip.name] = clipVariant;
+		}
+		else if (animator.runtimeAnimatorController is AnimatorOverrideController){
+			foreach(AnimationClipPair clipPair in ((AnimatorOverrideController)animatorControllerVariant).clips){
+				AnimationClip clipVariant = CreateAnimationClipVariant(clipPair.overrideClip, variant);
+
+				if (clipVariant != null){
+					clipVariantCreated = true;
+					((AnimatorOverrideController)animatorControllerVariant)[clipPair.originalClip.name] = clipVariant;
+				}
 			}
+		} 
+
+		// Use created animator controller, or delete it
+		if (clipVariantCreated){
+			animator.runtimeAnimatorController = animatorControllerVariant;
+		}
+		else{
+			AssetDatabase.DeleteAsset(animatorControllerVariantPath);
 		}
 
-		if (spriteReplacedInAnimator){
-			// Save variant animation (override) controller
-			animatorControllerVariant = CreateOrReplaceAsset<AnimatorOverrideController>(animatorControllerVariant, GetAssetVariantPath(AssetDatabase.GetAssetPath(animatorController), variant));
-			animator.runtimeAnimatorController = animatorControllerVariant;
-			return true;
-		}
-		
-		return false;
+		return clipVariantCreated;
 	}
-	
+
+		// Creates an animation clip variant if clip has references to sprites.
+	// Returns the created animation clip (null if not created)
+	private static AnimationClip CreateAnimationClipVariant(AnimationClip clip, string variant){
+		bool spriteReplaced = false;;
+
+		AnimationClip clipVariant = Object.Instantiate<AnimationClip>(clip);
+
+		EditorCurveBinding[] clipVariantCurveBindings = AnimationUtility.GetObjectReferenceCurveBindings(clipVariant);
+		foreach(EditorCurveBinding clipVariantCurveBinding in clipVariantCurveBindings){
+			ObjectReferenceKeyframe[] curveVariantKeyFrames = AnimationUtility.GetObjectReferenceCurve(clipVariant, clipVariantCurveBinding);
+			// Replace sprites
+			if (clipVariantCurveBinding.type == typeof(SpriteRenderer)){
+				for(int i=0; i<curveVariantKeyFrames.Length; i++){
+					Sprite sprite = (Sprite)curveVariantKeyFrames[i].value;
+					Sprite spriteVariant = GetSpriteVariant(sprite, variant);
+					if (spriteVariant != null){
+						curveVariantKeyFrames[i].value = spriteVariant;
+						spriteReplaced = true;
+					}
+				}
+			}
+			AnimationUtility.SetObjectReferenceCurve(clipVariant, clipVariantCurveBinding, curveVariantKeyFrames);
+		}
+
+		if (spriteReplaced){
+			return CreateOrReplaceAsset<AnimationClip>(clipVariant, GetAssetVariantPath(AssetDatabase.GetAssetPath(clip), variant));
+		}
+
+		return null;
+	}
+
+	private static T CopyAsset<T>(string path, string newPath) where T:Object{
+		AssetDatabase.DeleteAsset(newPath);
+		AssetDatabase.CopyAsset(path, newPath);
+		AssetDatabase.SaveAssets();
+		AssetDatabase.Refresh();
+		return AssetDatabase.LoadAssetAtPath<T>(newPath);
+	}
+
 	private static T CreateOrReplaceAsset<T> (T asset, string path) where T:Object{
 		 T existingAsset = AssetDatabase.LoadAssetAtPath<T>(path);
 		 
@@ -265,4 +302,13 @@ public class AssetVariants {
 		 
 		 return existingAsset;
 	}
+	
+	private static void ExecuteOnGameObjectAndChildren(GameObject gameObject, UnityAction<GameObject> action){
+		action(gameObject);
+		
+		for(int i=0; i<gameObject.transform.childCount; i++){
+			ExecuteOnGameObjectAndChildren(gameObject.transform.GetChild(i).gameObject, action);
+		}
+	}
+
 }
