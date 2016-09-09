@@ -148,10 +148,12 @@ public class AssetVariants {
 
 	// Returns the sprite variant of a given sprite. Null if not found.
 	private static Sprite GetSpriteVariant(Sprite sprite, string variant){
+		if (sprite == null) return null;
+
 		string texturePathVariant = GetTextureVariantPath(sprite.texture, variant);
 		Object[] spriteVariants = AssetDatabase.LoadAllAssetsAtPath(texturePathVariant);
 		foreach(Object spriteVariant in spriteVariants){
-			if (spriteVariant.name == sprite.name){
+			if (spriteVariant.name == sprite.name && spriteVariant is Sprite){
 				return (Sprite)spriteVariant;
 			}
 		}
@@ -250,7 +252,7 @@ public class AssetVariants {
 		return clipVariantCreated;
 	}
 
-		// Creates an animation clip variant if clip has references to sprites.
+	// Creates an animation clip variant if clip has references to sprites.
 	// Returns the created animation clip (null if not created)
 	private static AnimationClip CreateAnimationClipVariant(AnimationClip clip, string variant){
 		bool spriteReplaced = false;;
